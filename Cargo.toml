@@ -11,9 +11,9 @@ unstable = []
 [dependencies]
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports", "plotters"] }
+#criterion = { version = "0.8", features = ["html_reports", "plotters"] }
 hibitset = "0.6"
 
-[[bench]]
-name = "benchmarks"
-harness = false
+#[[bench]]
+#name = "benchmarks"
+#harness = false
