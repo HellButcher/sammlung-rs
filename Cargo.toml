@@ -7,7 +7,7 @@ repository = "https://github.com/HellButcher/sammlung-rs.git"
 description = "Lightweight, cache-friendly zero-dependency collection types for Rust — bit sets, sorted maps, and sorted sets backed by vectors."
 edition = "2024"
 readme = "README.md"
-keywords = ["bitset", "container", "data-structures", "map", "set", "sorted-map", "sorted-set", "vector", "vecset", "vecmap"]
+keywords = ["bitset", "data-structures", "vecset", "vecmap", "collections"]
 categories = ["data-structures"]
 
 [features]
