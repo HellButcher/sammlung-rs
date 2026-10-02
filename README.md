@@ -1,5 +1,10 @@
 # Sammlung
 
+[![CI](https://github.com/HellButcher/sammlung-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/HellButcher/sammlung-rs/actions/workflows/rust.yml)
+[![Version](https://img.shields.io/crates/v/sammlung)](https://crates.io/crates/sammlung)
+[![Docs](https://docs.rs/sammlung/badge.svg)](https://docs.rs/sammlung)
+[![License: MIT OR Apache-2.0](https://img.shields.io/crates/l/sammlung)](https://github.com/HellButcher/sammlung-rs.git#license)
+
 Lightweight, cache-friendly zero-dependency collection types for Rust — bit sets, sorted maps, and sorted sets backed by vectors.
 
 ## Types
