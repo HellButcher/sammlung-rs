@@ -1,8 +1,56 @@
-use core::fmt;
+//! A set backed by a sorted `Vec<T>` with binary search for lookups.
+//!
+//! Insert and remove are O(n) due to vector shifts; contains is O(log n).
+//! Excellent cache locality for small sets.
+//!
+//! # Generic type parameter
+//!
+//! `T` must implement [`Ord`] so that elements can be kept in sorted order. This enables
+//! binary search for O(log n) lookups and efficient set-diff iterators that merge two sorted
+//! sequences.
+//!
+//! # Construction from unsorted data
+//!
+//! Use [`From<Vec<T>>`](VecSet::from), [`FromIterator`], or [`extend()`](Extend::extend) to
+//! construct a `VecSet` from unsorted data — these automatically sort and deduplicate.
+//! For already-sorted data, use [`from_sorted_vec()`](VecSet::from_sorted_vec) or
+//! [`from_sorted_iter()`](VecSet::from_sorted_iter) to avoid redundant sorting.
+//!
+//! # Set operations
+//!
+//! `VecSet` supports standard set operations via both method calls and operator overloads:
+//!
+//! | Operation | Method | Operator |
+//! |---|---|---|
+//! | Union | [`union()`](VecSet::union) | `\|` |
+//! | Intersection | [`intersection()`](VecSet::intersection) | `&` |
+//! | Difference | [`difference()`](VecSet::difference) | `-` |
+//! | Symmetric difference | [`symmetric_difference()`](VecSet::symmetric_difference) | `^` |
+//!
+//! The iterator-based methods return zero-allocation iterators that borrow both sets. The operator
+//! variants allocate and return a new `VecSet`. In-place operators (`|=`, `&=`, `^=`, `-=`)
+//! mutate `self` directly.
+//!
+//! # Example
+//!
+//! ```
+//! use sammlung::VecSet;
+//!
+//! let mut set: VecSet<i32> = VecSet::new();
+//! assert!(set.insert(3));
+//! assert!(set.insert(1));
+//! assert!(!set.insert(3));  // already present
+//! assert_eq!(set.len(), 2);
+//! assert!(set.contains(&3));
+//! ```
+
+use core::{cmp, fmt};
 use core::{
     iter::{FusedIterator, Peekable},
     ops,
 };
+
+use alloc::vec::Vec;
 
 /// A set backed by a sorted `Vec<T>` with binary search for lookups.
 ///
@@ -470,9 +518,9 @@ impl<T: Ord> VecSet<T> {
         let mut j = 0;
         while i < self.len() && j < other.len() {
             match self.values[i].cmp(&other.values[j]) {
-                std::cmp::Ordering::Less => i += 1,
-                std::cmp::Ordering::Greater => j += 1,
-                std::cmp::Ordering::Equal => return false,
+                cmp::Ordering::Less => i += 1,
+                cmp::Ordering::Greater => j += 1,
+                cmp::Ordering::Equal => return false,
             }
         }
         true
@@ -499,9 +547,9 @@ impl<T: Ord> VecSet<T> {
         let mut j = 0;
         while i < self.len() && j < other.len() {
             match self.values[i].cmp(&other.values[j]) {
-                std::cmp::Ordering::Less => return false,
-                std::cmp::Ordering::Greater => j += 1,
-                std::cmp::Ordering::Equal => {
+                cmp::Ordering::Less => return false,
+                cmp::Ordering::Greater => j += 1,
+                cmp::Ordering::Equal => {
                     i += 1;
                     j += 1;
                 }
@@ -712,8 +760,8 @@ impl<T: Ord> FromIterator<T> for VecSet<T> {
     }
 }
 
-pub type Iter<'a, T> = std::slice::Iter<'a, T>;
-pub type IntoIter<T> = std::vec::IntoIter<T>;
+pub type Iter<'a, T> = core::slice::Iter<'a, T>;
+pub type IntoIter<T> = alloc::vec::IntoIter<T>;
 
 impl<T: Ord> IntoIterator for VecSet<T> {
     type Item = T;
@@ -764,13 +812,13 @@ impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for VecSet<T> {
 
     #[cfg(feature = "unstable")]
     #[inline]
-    fn extend_one(&mut self, value: T) {
-        self.insert(value);
+    fn extend_one(&mut self, value: &T) {
+        self.insert(*value);
     }
 }
 
 impl<T: Ord + fmt::Debug> fmt::Debug for VecSet<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_set().entries(self.values.iter()).finish()
     }
 }
@@ -825,11 +873,11 @@ impl<'a, T: Ord> Iterator for Difference<'a, T> {
             {
                 let added = self.added.next()?;
                 match added.cmp(removed) {
-                    std::cmp::Ordering::Less => return Some(added),
-                    std::cmp::Ordering::Equal => {
+                    cmp::Ordering::Less => return Some(added),
+                    cmp::Ordering::Equal => {
                         self.removed.next();
                     }
-                    std::cmp::Ordering::Greater => {
+                    cmp::Ordering::Greater => {
                         self.removed.next();
                         return Some(added);
                     }
@@ -877,13 +925,13 @@ impl<'a, T: Ord> Iterator for SymmetricDifference<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         while let (Some(left), Some(right)) = (self.left.peek(), self.right.peek()) {
             match left.cmp(right) {
-                std::cmp::Ordering::Less => {
+                cmp::Ordering::Less => {
                     return self.left.next();
                 }
-                std::cmp::Ordering::Greater => {
+                cmp::Ordering::Greater => {
                     self.right.next();
                 }
-                std::cmp::Ordering::Equal => {
+                cmp::Ordering::Equal => {
                     self.left.next();
                     self.right.next();
                 }
@@ -936,13 +984,13 @@ impl<'a, T: Ord> Iterator for Intersection<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         while let (Some(left), Some(right)) = (self.left.peek(), self.right.peek()) {
             match left.cmp(right) {
-                std::cmp::Ordering::Less => {
+                cmp::Ordering::Less => {
                     self.left.next();
                 }
-                std::cmp::Ordering::Greater => {
+                cmp::Ordering::Greater => {
                     self.right.next();
                 }
-                std::cmp::Ordering::Equal => {
+                cmp::Ordering::Equal => {
                     self.right.next();
                     return self.left.next();
                 }
@@ -989,13 +1037,13 @@ impl<'a, T: Ord> Iterator for Union<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         if let (Some(left), Some(right)) = (self.left.peek(), self.right.peek()) {
             match left.cmp(right) {
-                std::cmp::Ordering::Less => {
+                cmp::Ordering::Less => {
                     return self.left.next();
                 }
-                std::cmp::Ordering::Greater => {
+                cmp::Ordering::Greater => {
                     return self.right.next();
                 }
-                std::cmp::Ordering::Equal => {
+                cmp::Ordering::Equal => {
                     self.right.next();
                     return self.left.next();
                 }
@@ -1082,11 +1130,11 @@ impl<T: Ord> ops::BitAndAssign<&'_ VecSet<T>> for VecSet<T> {
         self.values.retain(|value| {
             while let Some(other) = current.peek() {
                 match value.cmp(other) {
-                    std::cmp::Ordering::Less => return false,
-                    std::cmp::Ordering::Greater => {
+                    cmp::Ordering::Less => return false,
+                    cmp::Ordering::Greater => {
                         current.next();
                     }
-                    std::cmp::Ordering::Equal => {
+                    cmp::Ordering::Equal => {
                         current.next();
                         return true;
                     }
@@ -1132,11 +1180,11 @@ impl<T: Ord> ops::SubAssign<&'_ VecSet<T>> for VecSet<T> {
         self.values.retain(|value| {
             while let Some(other) = current.peek() {
                 match value.cmp(other) {
-                    std::cmp::Ordering::Less => return true,
-                    std::cmp::Ordering::Greater => {
+                    cmp::Ordering::Less => return true,
+                    cmp::Ordering::Greater => {
                         current.next();
                     }
-                    std::cmp::Ordering::Equal => {
+                    cmp::Ordering::Equal => {
                         current.next();
                         return false;
                     }

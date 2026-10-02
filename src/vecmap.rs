@@ -1,4 +1,48 @@
-use core::fmt;
+//! A map backed by two parallel sorted `Vec`s (keys and values) that uses binary search for lookups.
+//!
+//! Keys are kept in sorted order at all times, with values stored in the same order as their
+//! corresponding keys. Insert and remove are O(n) due to vector shifts; get and contains are
+//! O(log n).
+//!
+//! # Best for
+//!
+//! Small-to-medium maps where cache locality matters more than asymptotic lookup speed. For large
+//! maps, consider `std::collections::BTreeMap` or `std::collections::HashMap` instead.
+//!
+//! # Entry API
+//!
+//! Use [`entry()`](VecMap::entry) to inspect and conditionally insert values:
+//!
+//! ```
+//! use sammlung::VecMap;
+//!
+//! let mut map = VecMap::new();
+//!
+//! // Insert only if absent
+//! map.entry("key").or_insert(42);
+//!
+//! // Compute value lazily
+//! map.entry("key").or_insert_with(|| 99);
+//! ```
+//!
+//! # Example
+//!
+//! ```
+//! use sammlung::VecMap;
+//!
+//! let mut map = VecMap::new();
+//! map.insert("banana", 3);
+//! map.insert("apple", 1);
+//! map.insert("cherry", 2);
+//!
+//! assert_eq!(map.get(&"apple"), Some(&1));
+//! assert_eq!(map.len(), 3);
+//! assert!(map.contains_key(&"banana"));
+//! ```
+
+use core::{fmt, ops};
+
+use alloc::vec::Vec;
 
 /// A map backed by two parallel sorted `Vec`s (keys and values) that uses binary search for lookups.
 ///
@@ -670,7 +714,7 @@ impl<K: Ord, V> Default for VecMap<K, V> {
     }
 }
 
-impl<K: Ord, V> std::ops::Index<&K> for VecMap<K, V> {
+impl<K: Ord, V> ops::Index<&K> for VecMap<K, V> {
     type Output = V;
 
     /// Index into the map by key. Panics if the key is not found.
@@ -695,7 +739,7 @@ impl<K: Ord, V> std::ops::Index<&K> for VecMap<K, V> {
     }
 }
 
-impl<K: Ord, V> std::ops::IndexMut<&K> for VecMap<K, V> {
+impl<K: Ord, V> ops::IndexMut<&K> for VecMap<K, V> {
     /// Mutable index into the map by key. Panics if the key is not found.
     ///
     /// # Panics
@@ -748,9 +792,9 @@ impl<K: Ord, V, const N: usize> From<[(K, V); N]> for VecMap<K, V> {
     }
 }
 
-pub type IntoIter<K, V> = std::iter::Zip<std::vec::IntoIter<K>, std::vec::IntoIter<V>>;
-pub type Iter<'a, K, V> = std::iter::Zip<std::slice::Iter<'a, K>, std::slice::Iter<'a, V>>;
-pub type IterMut<'a, K, V> = std::iter::Zip<std::slice::Iter<'a, K>, std::slice::IterMut<'a, V>>;
+pub type IntoIter<K, V> = core::iter::Zip<alloc::vec::IntoIter<K>, alloc::vec::IntoIter<V>>;
+pub type Iter<'a, K, V> = core::iter::Zip<core::slice::Iter<'a, K>, core::slice::Iter<'a, V>>;
+pub type IterMut<'a, K, V> = core::iter::Zip<core::slice::Iter<'a, K>, core::slice::IterMut<'a, V>>;
 
 impl<K: Ord, V> IntoIterator for VecMap<K, V> {
     type Item = (K, V);

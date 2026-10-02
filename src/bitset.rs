@@ -1,68 +1,142 @@
-use core::{fmt, ptr::NonNull};
-use std::{alloc, cmp, hash::Hash, iter::FusedIterator, marker::PhantomData, ops};
+//! A bit-packed set backed by a manually managed `Vec<u128>`. Each bit position `i` represents
+//! whether the value `i` is present.
+//!
+//! # Memory layout
+//!
+//! Internally, each `u128` word holds 128 bits. Capacity grows geometrically (powers of two) to
+//! amortize reallocation cost. The [`capacity()`](BitSet::capacity) method reports the number of
+//! *values* that fit, not the number of words.
+//!
+//! # Set operations
+//!
+//! `BitSet` supports standard set operations via both method calls and operator overloads:
+//!
+//! | Operation | Method | Operator |
+//! |---|---|---|
+//! | Union | [`union()`](BitSet::union) | `\|` |
+//! | Intersection | [`intersection()`](BitSet::intersection) | `&` |
+//! | Difference | [`difference()`](BitSet::difference) | `-` |
+//! | Symmetric difference | [`symmetric_difference()`](BitSet::symmetric_difference) | `^` |
+//!
+//! The iterator-based methods return zero-allocation iterators that borrow both sets. The operator
+//! variants (`|=`, `&=`, `^=`, `-=`) mutate `self` in place.
+//!
+//! # Generic allocator
+//!
+//! `BitSet` is generic over an [`Allocator`] (defaulting to the system allocator). This allows
+//! constructing bit sets with custom allocators via [`new_in()`](BitSet::new_in) and
+//! [`with_capacity_in()`](BitSet::with_capacity_in).
+//!
+//! # Example
+//!
+//! ```
+//! use sammlung::BitSet;
+//!
+//! let mut set = BitSet::with_capacity(100);
+//! set.insert(5);
+//! set.insert(42);
+//! assert!(set.contains(5));
+//! assert!(!set.contains(7));
+//! assert_eq!(set.len(), 2);
+//! ```
+
+use core::{cmp, fmt, hash::Hash, iter::FusedIterator, marker::PhantomData, ops, ptr::NonNull};
 
 type Word = u128;
 
+use alloc::alloc::Layout;
 #[cfg(feature = "unstable")]
-use alloc::{Allocator, Global};
+use alloc::alloc::{Allocator, Global};
 #[cfg(not(feature = "unstable"))]
-use alloc::{GlobalAlloc as Allocator, System as Global};
+use alloc::alloc::{GlobalAlloc as Allocator, handle_alloc_error};
+#[cfg(all(not(feature = "unstable"), feature = "std"))]
+use std::alloc::System as Global;
 
-/// A bit-packed set backed by a manually managed `Vec<u128>`. Each bit position `i` represents
-/// whether the value `i` is present.
-///
-/// No map payload — this is a pure set (boolean presence). Insert, remove, and contains are all
-/// O(1) with excellent cache locality and minimal memory: one bit per possible value.
-///
-/// # Best for
-///
-/// Dense ranges of non-negative integers where the maximum value fits in available memory. For
-/// example, tracking user IDs in the range 0–1,000,000 uses only ~125 KB.
-///
-/// # Generic allocator
-///
-/// `BitSet` is generic over an [`Allocator`] (defaulting to the system allocator). This allows
-/// constructing bit sets with custom allocators via [`new_in`](BitSet::new_in) and
-/// [`with_capacity_in`](BitSet::with_capacity_in).
-///
-/// # Example
-///
-/// ```
-/// # use sammlung::BitSet;
-///
-/// let mut set = BitSet::with_capacity(100);
-/// set.insert(5);
-/// set.insert(42);
-/// assert!(set.contains(5));
-/// assert!(!set.contains(7));
-/// assert_eq!(set.len(), 2);
-/// ```
-///
-/// # Set operations
-///
-/// `BitSet` supports standard set operations via both method calls and operator overloads:
-///
-/// | Operation | Method | Operator |
-/// |---|---|---|
-/// | Union | `.union(other)` | `a | b` |
-/// | Intersection | `.intersection(other)` | `a & b` |
-/// | Difference | `.difference(other)` | `a - b` |
-/// | Symmetric difference | `.symmetric_difference(other)` | `a ^ b` |
-///
-/// The iterator-based methods return zero-allocation iterators that borrow both sets. The operator
-/// variants (`|=`, `&=`, `^=`, `-=`) mutate `self` in place.
-///
-/// # Memory layout
-///
-/// Internally, each `u128` word holds 128 bits. Capacity grows geometrically (powers of two) to
-/// amortize reallocation cost. The `capacity()` method reports the number of *values* that fit, not
-/// the number of words.
-pub struct BitSet<A: Allocator = Global> {
-    bits: NonNull<Word>,
-    capacity_words: usize,
-    alloc: A,
+macro_rules! unstable_alloc_generics {
+    (
+        $(#[$m:meta])*
+        $v:vis struct $name:ident $( <$($generics:tt),*> )? {
+            $($body:tt)*
+        }
+    ) => {
+        #[cfg(feature = "unstable")]
+        $(#[$m])*
+        $v struct $name<$($($generics,)*)?A: alloc::alloc::Allocator = alloc::alloc::Global> {
+            $($body)*
+        }
+
+        #[cfg(all(not(feature = "unstable"), feature = "std"))]
+        $(#[$m])*
+        $v struct $name<$($($generics,)*)? A: alloc::alloc::GlobalAlloc = std::alloc::System> {
+            $($body)*
+        }
+        #[cfg(not(any(feature = "unstable", feature = "std")))]
+        $(#[$m])*
+        $v struct $name<$($($generics,)*)? A: alloc::alloc::GlobalAlloc> {
+            $($body)*
+        }
+    };
 }
 
+unstable_alloc_generics! {
+    /// A bit-packed set backed by a manually managed `Vec<u128>`. Each bit position `i` represents
+    /// whether the value `i` is present.
+    ///
+    /// No map payload — this is a pure set (boolean presence). Insert, remove, and contains are all
+    /// O(1) with excellent cache locality and minimal memory: one bit per possible value.
+    ///
+    /// # Best for
+    ///
+    /// Lower values (typically < 2^16). Memory cost scales with the highest value, not the number of
+    /// set bits, so this is not suited for sparse or large-value domains. For example, tracking values
+    /// in the range 0–65535 uses only ~8 KB.
+    ///
+    /// # Generic allocator
+    ///
+    /// `BitSet` is generic over an [`Allocator`] (defaulting to the system allocator). This allows
+    /// constructing bit sets with custom allocators via [`new_in`](BitSet::new_in) and
+    /// [`with_capacity_in`](BitSet::with_capacity_in).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use sammlung::BitSet;
+    ///
+    /// let mut set = BitSet::with_capacity(100);
+    /// set.insert(5);
+    /// set.insert(42);
+    /// assert!(set.contains(5));
+    /// assert!(!set.contains(7));
+    /// assert_eq!(set.len(), 2);
+    /// ```
+    ///
+    /// # Set operations
+    ///
+    /// `BitSet` supports standard set operations via both method calls and operator overloads:
+    ///
+    /// | Operation | Method | Operator |
+    /// |---|---|---|
+    /// | Union | `.union(other)` | `a | b` |
+    /// | Intersection | `.intersection(other)` | `a & b` |
+    /// | Difference | `.difference(other)` | `a - b` |
+    /// | Symmetric difference | `.symmetric_difference(other)` | `a ^ b` |
+    ///
+    /// The iterator-based methods return zero-allocation iterators that borrow both sets. The operator
+    /// variants (`|=`, `&=`, `^=`, `-=`) mutate `self` in place.
+    ///
+    /// # Memory layout
+    ///
+    /// Internally, each `u128` word holds 128 bits. Capacity grows geometrically (powers of two) to
+    /// amortize reallocation cost. The `capacity()` method reports the number of *values* that fit, not
+    /// the number of words.
+    pub struct BitSet {
+        bits: NonNull<Word>,
+        capacity_words: usize,
+        alloc: A,
+    }
+}
+
+#[cfg(any(feature = "unstable", feature = "std"))]
 impl BitSet {
     /// Create a new empty `BitSet` using the default system allocator.
     ///
@@ -168,13 +242,13 @@ impl<A: Allocator> BitSet<A> {
         self.capacity_words << Word::BITS.ilog2()
     }
 
-    #[inline]
+    #[cfg(not(feature = "unstable"))]
     fn resize(&mut self, new_capacity_words: usize) {
         let old_capacity = self.capacity_words;
         if old_capacity == new_capacity_words {
         } else if new_capacity_words == 0 {
             // deallocate
-            let old_layout = alloc::Layout::array::<Word>(old_capacity).unwrap();
+            let old_layout = Layout::array::<Word>(old_capacity).unwrap();
             let old_ptr = self.bits.as_ptr().cast();
             self.bits = NonNull::dangling();
             self.capacity_words = 0;
@@ -183,17 +257,17 @@ impl<A: Allocator> BitSet<A> {
             }
         } else if old_capacity == 0 {
             // allocate
-            let new_layout = alloc::Layout::array::<Word>(new_capacity_words).unwrap();
+            let new_layout = Layout::array::<Word>(new_capacity_words).unwrap();
             let new_bits = unsafe {
                 NonNull::new(self.alloc.alloc_zeroed(new_layout).cast())
-                    .unwrap_or_else(|| alloc::handle_alloc_error(new_layout))
+                    .unwrap_or_else(|| handle_alloc_error(new_layout))
             };
             self.bits = new_bits;
             self.capacity_words = new_capacity_words;
         } else {
             // reallocate
-            let old_layout = alloc::Layout::array::<Word>(old_capacity).unwrap();
-            let new_layout = alloc::Layout::array::<Word>(new_capacity_words).unwrap();
+            let old_layout = Layout::array::<Word>(old_capacity).unwrap();
+            let new_layout = Layout::array::<Word>(new_capacity_words).unwrap();
             let old_ptr = self.bits.as_ptr().cast();
             let new_bits: NonNull<Word> = unsafe {
                 NonNull::new(
@@ -201,7 +275,54 @@ impl<A: Allocator> BitSet<A> {
                         .realloc(old_ptr, old_layout, new_layout.size())
                         .cast(),
                 )
-                .unwrap_or_else(|| alloc::handle_alloc_error(new_layout))
+                .unwrap_or_else(|| handle_alloc_error(new_layout))
+            };
+            unsafe {
+                for i in old_capacity..new_capacity_words {
+                    new_bits.as_ptr().add(i).write(0);
+                }
+            }
+            self.bits = new_bits;
+            self.capacity_words = new_capacity_words;
+        }
+    }
+
+    #[cfg(feature = "unstable")]
+    fn resize(&mut self, new_capacity_words: usize) {
+        let old_capacity = self.capacity_words;
+        if old_capacity == new_capacity_words {
+        } else if new_capacity_words == 0 {
+            // deallocate
+            let old_layout = Layout::array::<Word>(old_capacity).unwrap();
+            let old_ptr = self.bits.cast();
+            self.bits = NonNull::dangling();
+            self.capacity_words = 0;
+            unsafe {
+                self.alloc.deallocate(old_ptr, old_layout);
+            }
+        } else if old_capacity == 0 {
+            // allocate
+            let new_layout = Layout::array::<Word>(new_capacity_words).unwrap();
+            let new_bits = self.alloc.allocate_zeroed(new_layout).unwrap().cast();
+            self.bits = new_bits;
+            self.capacity_words = new_capacity_words;
+        } else {
+            // reallocate
+            let old_layout = Layout::array::<Word>(old_capacity).unwrap();
+            let new_layout = Layout::array::<Word>(new_capacity_words).unwrap();
+            let old_ptr = self.bits.cast();
+            let new_bits: NonNull<Word> = unsafe {
+                if old_layout.size() >= new_layout.size() {
+                    self.alloc
+                        .grow_zeroed(old_ptr, old_layout, new_layout)
+                        .unwrap()
+                        .cast()
+                } else {
+                    self.alloc
+                        .shrink(old_ptr, old_layout, new_layout)
+                        .unwrap()
+                        .cast()
+                }
             };
             unsafe {
                 for i in old_capacity..new_capacity_words {
@@ -226,12 +347,12 @@ impl<A: Allocator> BitSet<A> {
 
     #[inline]
     fn words(&self) -> &[Word] {
-        unsafe { std::slice::from_raw_parts(self.bits.as_ptr(), self.capacity_words) }
+        unsafe { core::slice::from_raw_parts(self.bits.as_ptr(), self.capacity_words) }
     }
 
     #[inline]
     fn words_mut(&mut self) -> &mut [Word] {
-        unsafe { std::slice::from_raw_parts_mut(self.bits.as_ptr(), self.capacity_words) }
+        unsafe { core::slice::from_raw_parts_mut(self.bits.as_ptr(), self.capacity_words) }
     }
 
     #[inline]
@@ -698,7 +819,7 @@ impl Iterator for Iter<'_> {
 
 impl FusedIterator for Iter<'_> {}
 
-impl<'a> IntoIterator for &'a BitSet {
+impl<'a, A: Allocator> IntoIterator for &'a BitSet<A> {
     type Item = usize;
     type IntoIter = Iter<'a>;
 
@@ -797,6 +918,8 @@ impl<M: sealed::MergeOp> MergedIter<'_, M> {
     /// let rest = iter.rest_as_set();
     /// assert_eq!(rest.len(), 3); // {2, 3, 4} remain
     /// ```
+    #[inline]
+    #[cfg(any(feature = "unstable", feature = "std"))]
     pub fn rest_as_set(&self) -> BitSet {
         self.rest_as_set_in(Global)
     }
@@ -847,7 +970,7 @@ impl<M: sealed::MergeOp> MergedIter<'_, M> {
 }
 
 mod sealed {
-    use std::{iter::FusedIterator, marker::PhantomData};
+    use core::{iter::FusedIterator, marker::PhantomData};
 
     use super::{MergedIter, Word};
 
@@ -1081,7 +1204,7 @@ impl<A: Allocator> ops::BitOrAssign for BitSet<A> {
     /// Optimized by swapping with the RHS when the RHS has greater capacity, then merging.
     fn bitor_assign(&mut self, mut rhs: Self) {
         if self.capacity_words < rhs.capacity_words {
-            std::mem::swap(self, &mut rhs);
+            core::mem::swap(self, &mut rhs);
         }
         self.apply_merge::<sealed::UnionOp>(rhs.words());
     }
@@ -1093,7 +1216,7 @@ impl<A: Allocator> ops::BitXorAssign for BitSet<A> {
     /// Optimized by swapping with the RHS when the RHS has greater capacity, then merging.
     fn bitxor_assign(&mut self, mut rhs: Self) {
         if self.capacity_words < rhs.capacity_words {
-            std::mem::swap(self, &mut rhs);
+            core::mem::swap(self, &mut rhs);
         }
         self.apply_merge::<sealed::SymmetricDifferenceOp>(rhs.words());
     }
@@ -1120,10 +1243,10 @@ impl<A: Allocator, B: Allocator> cmp::PartialEq<BitSet<B>> for BitSet<A> {
     }
 }
 
-impl Eq for BitSet {}
+impl<A: Allocator> Eq for BitSet<A> {}
 
-impl Hash for BitSet {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl<A: Allocator> Hash for BitSet<A> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         for word in self.words_trim() {
             word.hash(state);
         }
