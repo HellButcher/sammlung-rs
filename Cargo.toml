@@ -1,6 +1,6 @@
 [package]
 name = "sammlung"
-version = "0.1.0"
+version = "0.1.1"
 license = "MIT OR Apache-2.0"
 authors = ["Christoph Hommelsheim <main@chommel.en>"]
 repository = "https://github.com/HellButcher/sammlung-rs.git"
